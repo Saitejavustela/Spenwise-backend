@@ -1,0 +1,191 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+
+datasource db {
+  provider  = "postgresql"
+  url  	    = env("DATABASE_URL")
+  
+}
+
+enum PaymentMode {
+  CASH
+  UPI
+  CARD
+  OTHER
+}
+
+enum UpiProvider {
+  PAYTM
+  GPAY
+  PHONEPE
+  AMAZON_PAY
+  OTHER
+}
+
+enum ShareStatus {
+  PENDING
+  SETTLED
+}
+
+model User {
+  id        String    @id @default(cuid())
+  name      String
+  email     String    @unique
+  password  String?   // Optional for Google OAuth users
+  googleId  String?   @unique // Google OAuth ID
+  avatar    String?   // Profile picture URL from Google
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  expenses   Expense[]
+  categories Category[]
+  groupsOwned Group[]
+  groupMembers GroupMember[]
+  trips      Trip[]
+}
+
+model Category {
+  id        String        @id @default(cuid())
+  name      String
+  icon      String?       // optional, for UI
+  userId    String?
+  user      User?         @relation(fields: [userId], references: [id])
+  createdAt DateTime      @default(now())
+
+  subCategories SubCategory[]
+  expenses      Expense[]
+}
+
+model SubCategory {
+  id         String   @id @default(cuid())
+  name       String
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id])
+
+  expenses   Expense[]
+}
+
+model Expense {
+  id             String       @id @default(cuid())
+  userId         String
+  user           User         @relation(fields: [userId], references: [id])
+
+  categoryId     String
+  category       Category     @relation(fields: [categoryId], references: [id])
+
+  subCategoryId  String?
+  subCategory    SubCategory? @relation(fields: [subCategoryId], references: [id])
+
+  description    String
+  date           DateTime
+  paymentMode    PaymentMode
+  upiProvider    UpiProvider?
+  amount         Decimal      @db.Decimal(10, 2)
+
+  tripId         String?
+  trip           Trip?        @relation(fields: [tripId], references: [id])
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+/* ------------ GROUP SPLIT (Splitwise-style) ------------ */
+
+model Group {
+  id            String        @id @default(cuid())
+  name          String
+  createdById   String
+  createdBy     User          @relation(fields: [createdById], references: [id])
+  createdAt     DateTime      @default(now())
+
+  members       GroupMember[]
+  expenses      GroupExpense[]
+  settlements   Settlement[]
+}
+
+model GroupMember {
+  id        String   @id @default(cuid())
+  groupId   String
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+
+  displayName String
+
+  group     Group    @relation(fields: [groupId], references: [id])
+  expensesPaid GroupExpense[] @relation("PaidBy")
+  shares    GroupShare[]
+  settlementsFrom Settlement[] @relation("SettlementsFrom")
+  settlementsTo   Settlement[] @relation("SettlementsTo")
+}
+
+model GroupExpense {
+  id             String        @id @default(cuid())
+  groupId        String
+  group          Group         @relation(fields: [groupId], references: [id])
+
+  paidById       String
+  paidBy         GroupMember   @relation("PaidBy", fields: [paidById], references: [id])
+
+  description    String
+  amount         Decimal       @db.Decimal(10, 2)
+  category       String?       // e.g., "Food", "Travel", "Stay", "Entertainment", "Shopping", "Other"
+  date           DateTime      @default(now())
+
+  shares         GroupShare[]
+  createdAt      DateTime      @default(now())
+}
+
+model GroupShare {
+  id             String       @id @default(cuid())
+  groupExpenseId String
+  groupExpense   GroupExpense @relation(fields: [groupExpenseId], references: [id])
+
+  memberId       String
+  member         GroupMember  @relation(fields: [memberId], references: [id])
+
+  shareAmount    Decimal      @db.Decimal(10, 2)
+  status         ShareStatus  @default(PENDING)
+}
+
+model Settlement {
+  id           String       @id @default(cuid())
+  groupId      String
+  group        Group        @relation(fields: [groupId], references: [id])
+
+  fromMemberId String
+  fromMember   GroupMember  @relation("SettlementsFrom", fields: [fromMemberId], references: [id])
+
+  toMemberId   String
+  toMember     GroupMember  @relation("SettlementsTo", fields: [toMemberId], references: [id])
+
+  amount       Decimal      @db.Decimal(10, 2)
+  note         String?
+  date         DateTime     @default(now())
+}
+
+/* ------------ TRIP BUDGET PLANNER ------------ */
+
+model Trip {
+  id        String              @id @default(cuid())
+  name      String
+  userId    String
+  user      User                @relation(fields: [userId], references: [id])
+  startDate DateTime
+  endDate   DateTime
+  createdAt DateTime            @default(now())
+
+  budgets   TripBudgetCategory[]
+  expenses  Expense[]
+}
+
+model TripBudgetCategory {
+  id              String   @id @default(cuid())
+  tripId          String
+  trip            Trip     @relation(fields: [tripId], references: [id])
+
+  category        String   // Travel, Food, Stay, Shopping, etc.
+  allocatedBudget Decimal  @db.Decimal(10, 2)
+  additionalBudget Decimal @db.Decimal(10, 2) @default(0)
+}
