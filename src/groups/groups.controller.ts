@@ -50,4 +50,9 @@ export class GroupsController {
   categorySummary(@Param('id') id: string, @Param('category') category: string) {
     return this.groupsService.getCategorySummary(id, category);
   }
+
+  @Delete(':id')
+  deleteGroup(@Req() req, @Param('id') id: string) {
+    return this.groupsService.deleteGroup(req.user.userId, id);
+  }
 }

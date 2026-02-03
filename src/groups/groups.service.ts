@@ -245,6 +245,51 @@ export class GroupsService {
     });
   }
 
+  async deleteGroup(userId: string, groupId: string) {
+    // Verify ownership
+    const group = await this.prisma.group.findUnique({
+      where: { id: groupId },
+    });
+
+    if (!group || group.createdById !== userId) {
+      throw new BadRequestException('Group not found or you are not the owner');
+    }
+
+    // Use transaction to delete all related data
+    return this.prisma.$transaction(async (tx) => {
+      // Delete all shares from expenses in this group
+      const expenses = await tx.groupExpense.findMany({
+        where: { groupId },
+        select: { id: true },
+      });
+      const expenseIds = expenses.map((e) => e.id);
+
+      await tx.groupShare.deleteMany({
+        where: { groupExpenseId: { in: expenseIds } },
+      });
+
+      // Delete all expenses
+      await tx.groupExpense.deleteMany({
+        where: { groupId },
+      });
+
+      // Delete all settlements
+      await tx.settlement.deleteMany({
+        where: { groupId },
+      });
+
+      // Delete all members
+      await tx.groupMember.deleteMany({
+        where: { groupId },
+      });
+
+      // Delete the group
+      return tx.group.delete({
+        where: { id: groupId },
+      });
+    });
+  }
+
   async getCategorySummary(groupId: string, category: string) {
     const members = await this.prisma.groupMember.findMany({
       where: { groupId },
