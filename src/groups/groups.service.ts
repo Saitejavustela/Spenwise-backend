@@ -295,34 +295,88 @@ export class GroupsService {
       where: { groupId },
     });
 
-    const expenses = await this.prisma.groupExpense.findMany({
-      where: { groupId, category },
+    // Get all expenses for the group to calculate totals
+    const allExpenses = await this.prisma.groupExpense.findMany({
+      where: { groupId },
       include: { shares: true },
     });
 
-    // Calculate balances for this category only
-    const balances: Record<string, number> = {};
-    members.forEach((m) => (balances[m.id] = 0));
+    // Get category-specific expenses
+    const categoryExpenses = allExpenses.filter(e => e.category === category);
 
-    for (const exp of expenses) {
-      balances[exp.paidById] += Number(exp.amount);
+    // Calculate overall balances (without settlements)
+    const overallBalances: Record<string, number> = {};
+    members.forEach((m) => (overallBalances[m.id] = 0));
+
+    for (const exp of allExpenses) {
+      overallBalances[exp.paidById] += Number(exp.amount);
       for (const share of exp.shares) {
-        balances[share.memberId] -= Number(share.shareAmount);
+        overallBalances[share.memberId] -= Number(share.shareAmount);
       }
+    }
+
+    // Calculate category-specific balances (without settlements)
+    const categoryBalancesRaw: Record<string, number> = {};
+    members.forEach((m) => (categoryBalancesRaw[m.id] = 0));
+
+    for (const exp of categoryExpenses) {
+      categoryBalancesRaw[exp.paidById] += Number(exp.amount);
+      for (const share of exp.shares) {
+        categoryBalancesRaw[share.memberId] -= Number(share.shareAmount);
+      }
+    }
+
+    // Get settlements
+    const settlements = await this.prisma.settlement.findMany({
+      where: { groupId },
+    });
+
+    // Apply settlements proportionally to this category
+    // Ratio = |category debt| / |overall debt| for each member
+    const adjustedBalances: Record<string, number> = { ...categoryBalancesRaw };
+
+    for (const settlement of settlements) {
+      const fromId = settlement.fromMemberId;
+      const toId = settlement.toMemberId;
+      const settlementAmount = Number(settlement.amount);
+
+      // Calculate what proportion of this settlement applies to this category
+      // Based on debt ratios in this category vs overall
+
+      const fromOverallDebt = Math.abs(Math.min(0, overallBalances[fromId] || 0));
+      const fromCategoryDebt = Math.abs(Math.min(0, categoryBalancesRaw[fromId] || 0));
+
+      const toOverallCredit = Math.max(0, overallBalances[toId] || 0);
+      const toCategoryCredit = Math.max(0, categoryBalancesRaw[toId] || 0);
+
+      // Proportional settlement for this category
+      let categorySettlementRatio = 0;
+      if (fromOverallDebt > 0.01 && toOverallCredit > 0.01) {
+        // Use average of from and to ratios
+        const fromRatio = fromCategoryDebt / fromOverallDebt;
+        const toRatio = toCategoryCredit / toOverallCredit;
+        categorySettlementRatio = (fromRatio + toRatio) / 2;
+      }
+
+      const categorySettlementAmount = settlementAmount * categorySettlementRatio;
+
+      // Apply proportional settlement
+      adjustedBalances[fromId] = (adjustedBalances[fromId] || 0) + categorySettlementAmount;
+      adjustedBalances[toId] = (adjustedBalances[toId] || 0) - categorySettlementAmount;
     }
 
     const categoryBalances = members.map((m) => ({
       memberId: m.id,
       name: m.displayName,
-      balance: balances[m.id] || 0,
+      balance: Math.round((adjustedBalances[m.id] || 0) * 100) / 100,
     }));
 
-    // Calculate suggested settlements for this category
+    // Calculate suggested settlements for this category (based on adjusted balances)
     const debtors: { id: string; name: string; amount: number }[] = [];
     const creditors: { id: string; name: string; amount: number }[] = [];
 
     for (const m of members) {
-      const bal = balances[m.id] || 0;
+      const bal = adjustedBalances[m.id] || 0;
       if (bal < -0.01) {
         debtors.push({ id: m.id, name: m.displayName, amount: Math.abs(bal) });
       } else if (bal > 0.01) {
@@ -366,10 +420,10 @@ export class GroupsService {
 
     return {
       category,
-      totalSpent: expenses.reduce((acc, e) => acc + Number(e.amount), 0),
+      totalSpent: categoryExpenses.reduce((acc, e) => acc + Number(e.amount), 0),
       balances: categoryBalances,
       suggestedSettlements,
-      expenses: expenses.map((e) => ({
+      expenses: categoryExpenses.map((e) => ({
         id: e.id,
         description: e.description,
         amount: Number(e.amount),
